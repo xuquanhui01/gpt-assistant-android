@@ -1,9 +1,12 @@
-package com.skythinker.gptassistant;
+package com.skythinker.gptassistant.data;
 
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Base64;
 import android.util.Log;
+
+import com.skythinker.gptassistant.BuildConfig;
+import com.skythinker.gptassistant.R;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -31,6 +34,7 @@ public class GlobalDataHolder {
     private static String gptApiKey;
     private static String gptModel;
     private static float gptTemperature;
+    private static int gptMaxContextNum;
     private static List<String> customModels = null;
     private static boolean checkAccessOnStart;
     private static boolean defaultEnableTts;
@@ -42,6 +46,7 @@ public class GlobalDataHolder {
     private static boolean limitVisionSize;
     private static boolean autoSaveHistory;
     private static boolean useGitee;
+    private static boolean agentMode;
     private static String latestVersion;
     private static SharedPreferences sp = null;
 
@@ -64,6 +69,7 @@ public class GlobalDataHolder {
         loadVisionSetting();
         loadHistorySetting();
         loadOnlineResourceSetting();
+        loadAgentModeSetting();
         loadUpdateSetting();
     }
 
@@ -86,6 +92,21 @@ public class GlobalDataHolder {
         }
     }
 
+    static class TabDataInputStream extends ObjectInputStream {
+        public TabDataInputStream(ByteArrayInputStream bais) throws IOException {
+            super(bais);
+        }
+
+        @Override
+        protected Class<?> resolveClass(java.io.ObjectStreamClass desc) throws IOException, ClassNotFoundException {
+            if (desc.getName().equals("com.skythinker.gptassistant.PromptTabData")) { // old package name
+                Log.d("GlobalDataHolder", "resolved old PromptTabData class");
+                return PromptTabData.class;
+            }
+            return super.resolveClass(desc);
+        }
+    }
+
     public static void loadTabDataList() {
         String base64 = sp.getString("tab_data_list", "");
         if (base64.equals("")) {
@@ -95,7 +116,7 @@ public class GlobalDataHolder {
         byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
         try {
             ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
-            tabDataList = (List<PromptTabData>) (new ObjectInputStream(bais).readObject());
+            tabDataList = (List<PromptTabData>) (new TabDataInputStream(bais).readObject());
         } catch (ClassNotFoundException | IOException e) {
             e.printStackTrace();
         }
@@ -161,12 +182,15 @@ public class GlobalDataHolder {
 
     public static void loadModelParams() {
         gptTemperature = sp.getFloat("model_temperature", 0.5f);
+        gptMaxContextNum = sp.getInt("max_context_num", 10);
     }
 
-    public static void saveModelParams(float temperature) {
+    public static void saveModelParams(float temperature, int maxContextNum) {
         gptTemperature = temperature;
+        gptMaxContextNum = maxContextNum;
         SharedPreferences.Editor editor = sp.edit();
         editor.putFloat("model_temperature", gptTemperature);
+        editor.putInt("max_context_num", gptMaxContextNum);
         editor.apply();
     }
 
@@ -264,6 +288,17 @@ public class GlobalDataHolder {
         editor.apply();
     }
 
+    public static void loadAgentModeSetting() {
+        agentMode = sp.getBoolean("agent_mode", true);
+    }
+
+    public static void saveAgentModeSetting(boolean enabled) {
+        agentMode = enabled;
+        SharedPreferences.Editor editor = sp.edit();
+        editor.putBoolean("agent_mode", agentMode);
+        editor.apply();
+    }
+
     public static void loadUpdateSetting() {
         latestVersion = sp.getString("latest_version", BuildConfig.VERSION_NAME);
     }
@@ -299,6 +334,8 @@ public class GlobalDataHolder {
 
     public static float getGptTemperature() {return gptTemperature; }
 
+    public static int getGptMaxContextNum() { return gptMaxContextNum; }
+
     public static boolean getCheckAccessOnStart() { return checkAccessOnStart; }
 
     public static boolean getDefaultEnableTts() { return defaultEnableTts; }
@@ -318,6 +355,8 @@ public class GlobalDataHolder {
     public static boolean getAutoSaveHistory() { return autoSaveHistory; }
 
     public static boolean getUseGitee() { return useGitee; }
+
+    public static boolean getAgentMode() { return agentMode; }
 
     public static String getLatestVersion() { return latestVersion; }
 }

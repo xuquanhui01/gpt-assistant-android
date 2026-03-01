@@ -1,20 +1,27 @@
-package com.skythinker.gptassistant;
+package com.skythinker.gptassistant.service;
 
 import android.accessibilityservice.AccessibilityService;
-import android.app.ActivityManager;
-import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.media.AudioManager;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Vibrator;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
+import com.skythinker.gptassistant.ui.MainActivity;
+
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+
+import cn.hutool.json.JSONArray;
+import cn.hutool.json.JSONObject;
 
 public class MyAccessbilityService extends AccessibilityService {
 
@@ -38,7 +45,7 @@ public class MyAccessbilityService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent accessibilityEvent) {
-
+//        Log.d("MyAccessbilityService", "onAccessibilityEvent: " + accessibilityEvent.toString());
     }
 
     @Override
@@ -72,6 +79,9 @@ public class MyAccessbilityService extends AccessibilityService {
 
         if(pressCount == 0){ // 当前处于判定周期的第一次按下（标准情况的一次长按+短按为一个判定周期）
             if(eventAction == KeyEvent.ACTION_DOWN) {
+
+//                Log.d("MyAccessbilityService", "widget: " + new WidgetNode().fromAccessibilityNodeInfo(getRootInActiveWindow()).toJson().toStringPretty());
+
                 keyDownTime = eventTime;
                 isPressing = true;
                 handler.postDelayed(() -> { // 等待长按时间后进行长按判定

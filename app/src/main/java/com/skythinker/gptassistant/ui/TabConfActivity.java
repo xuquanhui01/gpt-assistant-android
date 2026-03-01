@@ -1,4 +1,4 @@
-package com.skythinker.gptassistant;
+package com.skythinker.gptassistant.ui;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -32,6 +32,12 @@ import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import com.skythinker.gptassistant.BuildConfig;
+import com.skythinker.gptassistant.data.GlobalDataHolder;
+import com.skythinker.gptassistant.tool.GlobalUtils;
+import com.skythinker.gptassistant.data.PromptTabData;
+import com.skythinker.gptassistant.R;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -195,10 +201,24 @@ public class TabConfActivity extends Activity {
                     if (!editable.toString().isEmpty()) {
                         float temperature = Float.parseFloat(editable.toString().trim());
                         if (temperature >= 0 && temperature <= 2)
-                            GlobalDataHolder.saveModelParams(temperature);
+                            GlobalDataHolder.saveModelParams(temperature, GlobalDataHolder.getGptMaxContextNum());
                     }
                 } catch (NumberFormatException e) {
                     ((EditText) findViewById(R.id.et_temperature_conf)).setText(String.valueOf(GlobalDataHolder.getGptTemperature()));
+                }
+            }
+        });
+
+        ((EditText) findViewById(R.id.et_context_num_conf)).setText(String.valueOf(GlobalDataHolder.getGptMaxContextNum()));
+        ((EditText) findViewById(R.id.et_context_num_conf)).addTextChangedListener(new CustomTextWatcher() {
+            public void afterTextChanged(Editable editable) {
+                try {
+                    if (!editable.toString().isEmpty()) {
+                        int contextNum = Integer.parseInt(editable.toString().trim());
+                        GlobalDataHolder.saveModelParams(GlobalDataHolder.getGptTemperature(), contextNum);
+                    }
+                } catch (NumberFormatException e) {
+                    ((EditText) findViewById(R.id.et_context_num_conf)).setText(String.valueOf(GlobalDataHolder.getGptMaxContextNum()));
                 }
             }
         });
@@ -328,7 +348,7 @@ public class TabConfActivity extends Activity {
         });
 
         ((Switch) findViewById(R.id.sw_enable_internet_conf)).setChecked(GlobalDataHolder.getEnableInternetAccess());
-        setInternetItemHidden(!GlobalDataHolder.getEnableInternetAccess());
+//        setInternetItemHidden(!GlobalDataHolder.getEnableInternetAccess());
         ((Switch) findViewById(R.id.sw_enable_internet_conf)).setOnCheckedChangeListener((compoundButton, checked) -> {
             if(checked)
                 Toast.makeText(this, R.string.toast_enable_network, Toast.LENGTH_LONG).show();

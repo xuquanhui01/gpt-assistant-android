@@ -1,4 +1,4 @@
-package com.skythinker.gptassistant;
+package com.skythinker.gptassistant.ui;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
@@ -9,7 +9,10 @@ import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -77,10 +80,27 @@ import cn.hutool.json.JSONException;
 import cn.hutool.json.JSONObject;
 import io.noties.prism4j.annotations.PrismBundle;
 
-import com.skythinker.gptassistant.ChatManager.ChatMessage.ChatRole;
-import com.skythinker.gptassistant.ChatManager.ChatMessage;
-import com.skythinker.gptassistant.ChatManager.MessageList;
-import com.skythinker.gptassistant.ChatManager.Conversation;
+import com.skythinker.gptassistant.BuildConfig;
+import com.skythinker.gptassistant.data.ChatManager;
+import com.skythinker.gptassistant.data.ChatManager.ChatMessage.ChatRole;
+import com.skythinker.gptassistant.data.ChatManager.ChatMessage;
+import com.skythinker.gptassistant.data.ChatManager.MessageList;
+import com.skythinker.gptassistant.data.ChatManager.Conversation;
+import com.skythinker.gptassistant.service.AgentAccessibilityService;
+import com.skythinker.gptassistant.tool.DocumentParser;
+import com.skythinker.gptassistant.data.GlobalDataHolder;
+import com.skythinker.gptassistant.tool.GlobalUtils;
+import com.skythinker.gptassistant.tool.MarkdownRenderer;
+import com.skythinker.gptassistant.service.MyAccessbilityService;
+import com.skythinker.gptassistant.data.PromptTabData;
+import com.skythinker.gptassistant.R;
+import com.skythinker.gptassistant.tool.WebScraper;
+import com.skythinker.gptassistant.api.ChatApiClient;
+import com.skythinker.gptassistant.asr.AsrClientBase;
+import com.skythinker.gptassistant.asr.BaiduAsrClient;
+import com.skythinker.gptassistant.asr.GoogleAsrClient;
+import com.skythinker.gptassistant.asr.HmsAsrClient;
+import com.skythinker.gptassistant.asr.WhisperAsrClient;
 
 @SuppressLint({"UseCompatLoadingForDrawables", "JavascriptInterface", "SetTextI18n"})
 @PrismBundle(includeAll = true)
@@ -117,6 +137,9 @@ public class MainActivity extends Activity {
 
     private boolean multiVoice = false;
 
+    private boolean networkEnabled = false;
+    private boolean agentMode = false;
+
     private JSONObject currentTemplateParams = null; // 当前模板参数
 
     AsrClientBase asrClient = null;
@@ -140,6 +163,7 @@ public class MainActivity extends Activity {
             public void uncaughtException(@NonNull Thread thread, @NonNull Throwable throwable) {
                 Log.e("UncaughtException", thread.getClass().getName() + " " + throwable.getMessage());
                 throwable.printStackTrace();
+//                GlobalUtils.copyToClipboard(MainActivity.this, Log.getStackTraceString(throwable));
                 System.exit(-1);
             }
         });
@@ -382,9 +406,99 @@ public class MainActivity extends Activity {
                                 e.printStackTrace();
                                 processFunctionResult(function, "Error when getting response.");
                             }
+                        }else if (function.name.equals("get_widget_tree")) {
+                            if(AgentAccessibilityService.isConnected()) {
+                                moveTaskToBack(true); // 最小化当前窗口
+                                handler.postDelayed(() -> {
+                                    JSONObject json = AgentAccessibilityService.staticThis.getWidgetJson();
+                                    json.putOpt("package", AgentAccessibilityService.staticThis.getCurrentPackageName());
+                                    Intent intent = new Intent(MainActivity.this, MainActivity.class);
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    startActivity(intent);
+                                    processFunctionResult(function, json.toString());
+                                }, 500);
+                            } else {
+                                processFunctionResult(function, "Accessibility service is not enabled.");
+                            }
+                        } else if (function.name.equals("widget_action")) {
+                            try {
+                                JSONObject argJson = new JSONObject(function.arguments);
+                                int id =  Integer.parseInt(argJson.getStr("id")); // 获取widget id
+                                String action = argJson.getStr("action", "click"); // 获取操作类型
+                                String text = argJson.getStr("input_text", ""); // 获取输入文本
+                                if(AgentAccessibilityService.isConnected()) {
+                                    moveTaskToBack(true); // 最小化当前窗口
+                                    handler.postDelayed(() -> {
+                                        AgentAccessibilityService.staticThis.rootWidgetNode.performAction(id, action, text);
+                                        handler.postDelayed(() -> {
+                                            JSONObject json = AgentAccessibilityService.staticThis.getWidgetJson();
+                                            json.putOpt("package", AgentAccessibilityService.staticThis.getCurrentPackageName());
+                                            Intent intent = new Intent(MainActivity.this, MainActivity.class);
+                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            startActivity(intent);
+                                            processFunctionResult(function, json.toString());
+                                        }, 2000);
+                                    }, 500);
+                                } else {
+                                    processFunctionResult(function, "Error: accessibility service is not enabled.");
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                                processFunctionResult(function, "Error when getting response.");
+                            }
+                        } else if(function.name.equals("find_package_name")) {
+                            try {
+                                JSONObject argJson = new JSONObject(function.arguments);
+                                String queryApp = argJson.getStr("app_name"); // 获取应用名称
+                                PackageManager pm = getPackageManager();
+                                Intent main = new Intent(Intent.ACTION_MAIN, null);
+                                main.addCategory(Intent.CATEGORY_LAUNCHER);
+                                List<ResolveInfo> packages = pm.queryIntentActivities(main, 0); // 获取所有可启动应用
+                                JSONObject resultJson = new JSONObject();
+                                for(ResolveInfo resolve_info : packages) {
+                                    String package_name = resolve_info.activityInfo.packageName;
+                                    String app_name = (String)pm.getApplicationLabel(pm.getApplicationInfo(package_name, PackageManager.GET_META_DATA));
+                                    if(app_name.toLowerCase().contains(queryApp.toLowerCase()) ||
+                                            queryApp.toLowerCase().contains(app_name.toLowerCase())) {
+                                        resultJson.putOpt(app_name, package_name);
+                                    }
+                                }
+                                if(!resultJson.isEmpty()) {
+                                    processFunctionResult(function, resultJson.toString());
+                                } else {
+                                    processFunctionResult(function, "No matching package found.");
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                                processFunctionResult(function, "Error when getting response.");
+                            }
+                        } else if(function.name.equals("launch_package")) {
+                            try {
+                                JSONObject argJson = new JSONObject(function.arguments);
+                                String packageName = argJson.getStr("package"); // 获取包名
+                                Intent intent = getPackageManager().getLaunchIntentForPackage(packageName);
+                                if(intent != null) {
+                                    startActivity(intent); // 启动应用
+                                    handler.postDelayed(() -> {
+                                        if(packageName.equals(AgentAccessibilityService.staticThis.getCurrentPackageName())) {
+                                            Intent selfIntent = new Intent(MainActivity.this, MainActivity.class);
+                                            selfIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            startActivity(selfIntent);
+                                            processFunctionResult(function, "OK");
+                                        } else {
+                                            processFunctionResult(function, "Error: failed to launch the package.");
+                                        }
+                                    }, 2000);
+                                } else {
+                                    processFunctionResult(function, "Error: package not found.");
+                                }
+                            } catch (JSONException e) {
+                                e.printStackTrace();
+                                processFunctionResult(function, "Error when getting response.");
+                            }
                         } else if (function.name.equals("exit_voice_chat")) {
                             if (multiVoice)
-                                runOnUiThread(() -> findViewById(R.id.cv_voice_chat).performClick());
+                                runOnUiThread(() -> pwMenu.getContentView().findViewById(R.id.cv_voice_chat).performClick());
                             processFunctionResult(function, "OK");
                         } else {
                             processFunctionResult(function, "Function not found.");
@@ -397,7 +511,7 @@ public class MainActivity extends Activity {
                         multiChatList.add(new ChatMessage(ChatRole.FUNCTION).addFunctionCall(function.toolId, function.name, function.arguments, result));
                         callingFunctions.remove(function); // 从函数调用列表中移除已完成的函数
                         if(callingFunctions.size() == 0) { // 所有函数调用完成，发送给GPT
-                            handler.post(() -> chatApiClient.sendPromptList(multiChatList));
+                            handler.post(() -> sendChatList(true));
                         } else {
                             handler.post(() -> callFunction(callingFunctions.get(0))); // 继续处理下一个函数调用
                         }
@@ -475,14 +589,18 @@ public class MainActivity extends Activity {
             return false;
         });
 
+        View menuView = LayoutInflater.from(this).inflate(R.layout.main_popup_menu, null);
+        pwMenu = new PopupWindow(menuView, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        pwMenu.setOutsideTouchable(true);
+
         // 连续对话按钮点击事件（切换连续对话开关状态）
-        (findViewById(R.id.cv_multi_chat)).setOnClickListener(view -> {
+        (menuView.findViewById(R.id.cv_multi_chat)).setOnClickListener(view -> {
             multiChat = !multiChat;
             if(multiChat){
-                ((CardView) findViewById(R.id.cv_multi_chat)).setForeground(getDrawable(R.drawable.chat_btn_enabled));
+                ((CardView) menuView.findViewById(R.id.cv_multi_chat)).setForeground(getDrawable(R.drawable.chat_btn_enabled));
                 GlobalUtils.showToast(this, R.string.toast_multi_chat_on, false);
             }else{
-                ((CardView) findViewById(R.id.cv_multi_chat)).setForeground(getDrawable(R.drawable.chat_btn));
+                ((CardView) menuView.findViewById(R.id.cv_multi_chat)).setForeground(getDrawable(R.drawable.chat_btn));
                 GlobalUtils.showToast(this, R.string.toast_multi_chat_off, false);
             }
         });
@@ -500,10 +618,6 @@ public class MainActivity extends Activity {
             multiChatList = currentConversation.messages;
         });
 
-        View menuView = LayoutInflater.from(this).inflate(R.layout.main_popup_menu, null);
-        pwMenu = new PopupWindow(menuView, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true);
-        pwMenu.setOutsideTouchable(true);
-
         (findViewById(R.id.cv_new_chat)).performClick(); // 初始化对话列表
 
         // TTS开关按钮点击事件（切换TTS开关状态）
@@ -520,27 +634,62 @@ public class MainActivity extends Activity {
         });
 
         // 连续语音对话按钮点击事件（切换连续语音对话开关状态）
-        (findViewById(R.id.cv_voice_chat)).setOnClickListener(view -> {
+        (menuView.findViewById(R.id.cv_voice_chat)).setOnClickListener(view -> {
             if(!multiVoice && !ttsEnabled) { // 未开启TTS时不允许开启连续语音对话
                 GlobalUtils.showToast(this, R.string.toast_voice_chat_tts_off, false);
                 return;
             }
             multiVoice = !multiVoice;
             if(multiVoice){
-                ((CardView) findViewById(R.id.cv_voice_chat)).setForeground(getDrawable(R.drawable.voice_chat_btn_enabled));
+                ((CardView) menuView.findViewById(R.id.cv_voice_chat)).setForeground(getDrawable(R.drawable.voice_chat_btn_enabled));
                 asrClient.setEnableAutoStop(true);
 //                chatApiClient.addFunction("exit_voice_chat", "this should be called when a conversation ends", "{}", new String[]{});
                 Intent intent = new Intent("com.skythinker.gptassistant.KEY_SPEECH_START");
                 LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
                 GlobalUtils.showToast(this, R.string.toast_multi_voice_on, false);
             } else {
-                ((CardView) findViewById(R.id.cv_voice_chat)).setForeground(getDrawable(R.drawable.voice_chat_btn));
+                ((CardView) menuView.findViewById(R.id.cv_voice_chat)).setForeground(getDrawable(R.drawable.voice_chat_btn));
                 asrClient.setEnableAutoStop(false);
 //                chatApiClient.removeFunction("exit_voice_chat");
                 Intent intent = new Intent("com.skythinker.gptassistant.KEY_SPEECH_STOP");
                 LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
                 GlobalUtils.showToast(this, R.string.toast_multi_voice_off, false);
             }
+        });
+
+        // 联网按钮点击事件
+        (findViewById(R.id.cv_network)).setOnClickListener(view -> {
+            networkEnabled = !networkEnabled;
+            if(networkEnabled) {
+                ((CardView) findViewById(R.id.cv_network)).setForeground(getDrawable(R.drawable.network_btn_enabled));
+                GlobalUtils.showToast(this, R.string.toast_network_on, false);
+            }else{
+                ((CardView) findViewById(R.id.cv_network)).setForeground(getDrawable(R.drawable.network_btn));
+                GlobalUtils.showToast(this, R.string.toast_network_off, false);
+            }
+            setNetworkEnabled(networkEnabled);
+            GlobalDataHolder.saveFunctionSetting(networkEnabled, GlobalDataHolder.getWebMaxCharCount(), GlobalDataHolder.getOnlyLatestWebResult());
+        });
+
+        // Agent模式按钮点击事件
+        (findViewById(R.id.cv_agent_mode)).setOnClickListener(view -> {
+            agentMode = !agentMode;
+            if(agentMode) {
+                if(AgentAccessibilityService.isConnected()) {
+                    ((CardView) findViewById(R.id.cv_agent_mode)).setForeground(getDrawable(R.drawable.agent_btn_enabled));
+                    GlobalUtils.showToast(this, R.string.toast_agent_on, false);
+                }else{
+                    agentMode = false;
+                    GlobalUtils.showToast(this, R.string.toast_agent_accessibility_off, false);
+                    Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+                    startActivity(intent);
+                }
+            }else{
+                ((CardView) findViewById(R.id.cv_agent_mode)).setForeground(getDrawable(R.drawable.agent_btn));
+                GlobalUtils.showToast(this, R.string.toast_agent_off, false);
+            }
+            setAgentModeEnabled(agentMode);
+            GlobalDataHolder.saveAgentModeSetting(agentMode);
         });
 
         // 历史按钮点击事件，跳转到历史记录页面
@@ -574,13 +723,30 @@ public class MainActivity extends Activity {
         // 用户设置为启动时开启连续对话
         if(GlobalDataHolder.getDefaultEnableMultiChat()){
             multiChat = true;
-            ((CardView) findViewById(R.id.cv_multi_chat)).setForeground(getDrawable(R.drawable.chat_btn_enabled));
+            ((CardView) menuView.findViewById(R.id.cv_multi_chat)).setForeground(getDrawable(R.drawable.chat_btn_enabled));
         }
 
         // 用户设置为启动时开启TTS
         if(!GlobalDataHolder.getDefaultEnableTts()){
             ttsEnabled = false;
             ((CardView) findViewById(R.id.cv_tts_off)).setForeground(getDrawable(R.drawable.tts_off_enable));
+        }
+
+        // 上次开启了联网
+        if(GlobalDataHolder.getEnableInternetAccess()){
+            networkEnabled = true;
+            ((CardView) findViewById(R.id.cv_network)).setForeground(getDrawable(R.drawable.network_btn_enabled));
+        }
+
+        // 上次开启了Agent模式
+        if(GlobalDataHolder.getAgentMode()){
+            if(AgentAccessibilityService.isConnected()){
+                agentMode = true;
+                ((CardView) findViewById(R.id.cv_agent_mode)).setForeground(getDrawable(R.drawable.agent_btn_enabled));
+            }else{
+                agentMode = false;
+                GlobalDataHolder.saveAgentModeSetting(false);
+            }
         }
 
         // 处理选中的模板
@@ -606,7 +772,7 @@ public class MainActivity extends Activity {
                     Toast.makeText(MainActivity.this, getString(R.string.text_asr_error_prefix) + msg, Toast.LENGTH_LONG).show();
                 }
                 if(multiVoice) {
-                    (findViewById(R.id.cv_voice_chat)).performClick();
+                    (menuView.findViewById(R.id.cv_voice_chat)).performClick();
                 }
             }
 
@@ -721,6 +887,27 @@ public class MainActivity extends Activity {
             chatApiClient.addFunction("get_html_text", "get all innerText and links of a web page", "{url: {type: string, description: html url}}", new String[]{"url"});
         } else {
             chatApiClient.removeFunction("get_html_text");
+        }
+    }
+
+    // 设置是否启用Agent模式
+    private void setAgentModeEnabled(boolean enabled) {
+        if(enabled) {
+            chatApiClient.addFunction("get_widget_tree", "get widget information tree on the screen", "{}", new String[]{});
+            chatApiClient.addFunction("widget_action", "perform an action on a widget in widget tree and get new widget tree",
+                    "{id: {type: string, description: widget id}," +
+                            "action: {type: string, description: action name, enum: [click, long_click, scroll_down, scroll_up, edit]}," +
+                            "input_text: {type: string, description: input text}}",
+                    new String[]{"id", "action"});
+            chatApiClient.addFunction("find_package_name", "find package name by app name",
+                    "{app_name: {type: string, description: application name}}", new String[]{"app_name"});
+            chatApiClient.addFunction("launch_package", "launch a package by package name",
+                    "{package: {type: string, description: package name}}", new String[]{"package"});
+        } else {
+            chatApiClient.removeFunction("get_widget_tree");
+            chatApiClient.removeFunction("widget_action");
+            chatApiClient.removeFunction("find_package_name");
+            chatApiClient.removeFunction("launch_package");
         }
     }
 
@@ -968,6 +1155,7 @@ public class MainActivity extends Activity {
         Log.d("MainActivity", "switch template: params=" + currentTemplateParams);
         chatApiClient.setModel(currentTemplateParams.getStr("model", GlobalDataHolder.getGptModel()));
         setNetworkEnabled(currentTemplateParams.getBool("network", GlobalDataHolder.getEnableInternetAccess()));
+        setAgentModeEnabled(currentTemplateParams.getBool("agent", GlobalDataHolder.getAgentMode()));
         updateTabListView();
         updateTemplateParamsView();
     }
@@ -1232,19 +1420,19 @@ public class MainActivity extends Activity {
 //            }
 //        }
 
-        if(GlobalDataHolder.getOnlyLatestWebResult()) { // 若设置为仅保留最新网页数据，删除之前的所有网页数据
-            for (int i = 0; i < multiChatList.size(); i++) {
-                ChatMessage chatItem = multiChatList.get(i);
-                if (chatItem.role == ChatRole.FUNCTION) {
-                    multiChatList.remove(i);
-                    i--;
-                    if(i > 0 && multiChatList.get(i).role == ChatRole.ASSISTANT) { // 也要删除调用Function的Assistant记录
-                        multiChatList.remove(i);
-                        i--;
-                    }
-                }
-            }
-        }
+//        if(GlobalDataHolder.getOnlyLatestWebResult()) { // 若设置为仅保留最新网页数据，删除之前的所有网页数据
+//            for (int i = 0; i < multiChatList.size(); i++) {
+//                ChatMessage chatItem = multiChatList.get(i);
+//                if (chatItem.role == ChatRole.FUNCTION) {
+//                    multiChatList.remove(i);
+//                    i--;
+//                    if(i > 0 && multiChatList.get(i).role == ChatRole.ASSISTANT) { // 也要删除调用Function的Assistant记录
+//                        multiChatList.remove(i);
+//                        i--;
+//                    }
+//                }
+//            }
+//        }
 
         // 添加对话布局
         LinearLayout llInput = addChatView(ChatRole.USER, isMultiChat ? multiChatList.get(multiChatList.size() - 1).contentText : userInput, multiChatList.get(multiChatList.size() - 1).attachments);
@@ -1261,11 +1449,75 @@ public class MainActivity extends Activity {
         if (BuildConfig.DEBUG && userInput.startsWith("#markdowndebug\n")) { // Markdown渲染测试
             markdownRenderer.render(tvGptReply, userInput.replace("#markdowndebug\n", ""));
         } else {
-            chatApiClient.sendPromptList(multiChatList);
+            sendChatList(false);
             selectedAttachments.clear();
             btSend.setImageResource(R.drawable.cancel_btn);
             updateAttachmentButton(); // 更新附件按钮状态
         }
+    }
+
+    // 预处理并发送聊天列表给GPT
+    void sendChatList(boolean isFunctionReply) {
+        MessageList chatList = new MessageList();
+        for(ChatMessage message : multiChatList) { // 深拷贝聊天记录
+            chatList.add(message.clone());
+        }
+
+        if(GlobalDataHolder.getOnlyLatestWebResult()) { // 若设置为仅保留最新网页数据，删除之前的所有网页数据
+            boolean foundLastUserMessage = false;
+            for (int i = chatList.size() - 1; i >= 0; i--) {
+                ChatMessage message = chatList.get(i);
+                if(message.role == ChatRole.USER) {
+                    foundLastUserMessage = true;
+                }
+                if(foundLastUserMessage && message.role == ChatRole.FUNCTION && message.toolCalls.get(0).functionName.equals("get_html_text")) {
+                    message.toolCalls.get(0).content = ""; // 清空网页数据
+                }
+            }
+        }
+
+        // 仅保留最后N条手机屏幕信息
+        int foundLastWidgetMessageCount = 0;
+        for(int i = chatList.size() - 1; i >= 0; i--) {
+            ChatMessage message = chatList.get(i);
+            if(message.role == ChatRole.FUNCTION) {
+                String functionName = message.toolCalls.get(0).functionName;
+                if(functionName.equals("get_widget_tree") || functionName.equals("widget_action")) {
+                    foundLastWidgetMessageCount++;
+                    if(foundLastWidgetMessageCount > 1) { // 只保留最后1条手机屏幕信息
+                        message.toolCalls.get(0).content = "";
+                    }
+                }
+            }
+        }
+
+        // 向上查找第一个USER之前的所有普通聊天消息，超过最大限制则删除之前的(不包括system)
+        int normalChatCount = -1;
+        for(int i = chatList.size() - 1; i >= 0; i--) {
+            ChatMessage message = chatList.get(i);
+            if(normalChatCount >= 0 &&
+                    (message.role == ChatRole.USER || (message.role == ChatRole.ASSISTANT && message.toolCalls.size() == 0))) {
+                normalChatCount++;
+            }
+            if(normalChatCount > GlobalDataHolder.getGptMaxContextNum() && message.role != ChatRole.SYSTEM) {
+                chatList.remove(i);
+            }
+            if(normalChatCount == -1 && message.role == ChatRole.USER) { // 找到第一个USER，开始计数
+                normalChatCount = 0;
+            }
+        }
+
+        if(isFunctionReply) { // 如果是返回函数调用结果，需要将接收到一半的回复加到聊天列表
+            for (int i = chatList.size() - 1; i >= 0; i--) {
+                ChatMessage message = chatList.get(i);
+                if(message.role == ChatRole.ASSISTANT && message.toolCalls.size() > 0) { // 找到调用工具的消息，在前面插入
+                    chatList.add(i, new ChatMessage(ChatRole.ASSISTANT).setText(chatApiBuffer));
+                    break;
+                }
+            }
+        }
+
+        chatApiClient.sendPromptList(chatList); // 发送聊天列表给GPT
     }
 
     // 获取附件弹窗
