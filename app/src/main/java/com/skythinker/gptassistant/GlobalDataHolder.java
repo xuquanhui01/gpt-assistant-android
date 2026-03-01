@@ -15,6 +15,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * 全局数据处理
+ */
 public class GlobalDataHolder {
     private static List<PromptTabData> tabDataList = null;
     private static boolean asrUseWhisper;
